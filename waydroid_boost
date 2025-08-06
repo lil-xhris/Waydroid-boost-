@@ -1,0 +1,156 @@
+#!/bin/bash
+# 🚀 Ultimate Debian + Waydroid Gaming Boost (ZRAM/CPU/GPU/Turbo)
+#
+# Features:
+# - Smart ZRAM configuration (auto-adjusts for RAM size)
+# - CPU performance governor + Turbo Boost
+# - NVIDIA/AMD/Intel GPU optimization
+# - Waydroid priority boost with GameMode
+# - Temperature monitoring setup
+# - Systemd persistence option
+
+# --- Root Check ---
+if [ "$(id -u)" -ne 0 ]; then
+    echo -e "\033[1;31m❌ Please run as root:\033[0m\nsudo $0" >&2
+    exit 1
+fi
+
+# --- System Info ---
+clear
+echo -e "\033[1;36m=== Waydroid Gaming Boost ===\033[0m"
+CPU_CORES=$(nproc)
+RAM_MB=$(free -m | awk '/Mem:/ {print $2}')
+RAM_GB=$((RAM_MB / 1024))
+echo -e "\033[1;33m🔍 System Detected: $CPU_CORES cores | ${RAM_GB}GB RAM\033[0m"
+
+# --- Package Installation ---
+echo -e "\n\033[1;32m[1/6] 📦 Installing packages...\033[0m"
+apt update -y && apt install -y \
+    zram-tools \
+    cpufrequtils \
+    gamemode \
+    lm-sensors \
+    htop \
+    pciutils \
+    mesa-utils || {
+    echo -e "\033[1;31m❌ Package installation failed!\033[0m" >&2
+    exit 1
+}
+
+# --- ZRAM Configuration ---
+echo -e "\n\033[1;32m[2/6] 💾 Optimizing ZRAM...\033[0m"
+
+if [ "$RAM_MB" -le 2048 ]; then
+    ZRAM_PERCENT=50
+    echo " - Low RAM system (≤2GB): Using 50% ZRAM"
+elif [ "$RAM_MB" -ge 8192 ]; then
+    ZRAM_PERCENT=25
+    echo " - High RAM system (≥8GB): Using 25% ZRAM"
+else
+    ZRAM_PERCENT=75
+    echo " - Normal RAM system: Using 75% ZRAM"
+fi
+
+cat > /etc/default/zramswap <<EOF
+ALGO=lz4
+PERCENT=$ZRAM_PERCENT
+MIN=512
+EOF
+
+systemctl enable --now zramswap && echo " - ZRAM activated" || echo "⚠️ ZRAM service issue (may need reboot)"
+
+# --- CPU Optimization ---
+echo -e "\n\033[1;32m[3/6] ⚡ Turbocharging CPU...\033[0m"
+
+echo 'GOVERNOR="performance"' > /etc/default/cpufrequtils
+systemctl restart cpufrequtils 2>/dev/null || true
+
+if grep -qi "intel" /proc/cpuinfo && [ -f /sys/devices/system/cpu/intel_pstate/no_turbo ]; then
+    echo 0 > /sys/devices/system/cpu/intel_pstate/no_turbo
+    echo " - Intel Turbo Boost: Enabled"
+elif grep -qi "amd" /proc/cpuinfo && [ -f /sys/devices/system/cpu/cpufreq/boost ]; then
+    echo 1 > /sys/devices/system/cpu/cpufreq/boost
+    echo " - AMD Turbo Core: Enabled"
+fi
+
+# --- GPU Optimization ---
+echo -e "\n\033[1;32m[4/6] 🎮 Maximizing GPU Performance...\033[0m"
+GPU_INFO=$(lspci -nn | grep -i 'vga\|3d\|display')
+echo " - Detected GPU: ${GPU_INFO:-Unknown}"
+
+if echo "$GPU_INFO" | grep -qi "nvidia"; then
+    if command -v nvidia-smi &>/dev/null; then
+        nvidia-smi -pm 1
+        echo " - NVIDIA: Persistence mode enabled"
+        if command -v nvidia-settings &>/dev/null; then
+            nvidia-settings -a '[gpu:0]/GpuPowerMizerMode=1' >/dev/null
+            echo " - NVIDIA: PowerMizer set to Prefer Maximum Performance"
+        fi
+    fi
+elif echo "$GPU_INFO" | grep -qi "intel"; then
+    echo " - Intel iGPU: Running on kernel defaults (check governor)"
+elif echo "$GPU_INFO" | grep -qi "amd\|radeon"; then
+    echo " - AMD GPU: Consider 'radeon.powersave=0' kernel parameter"
+fi
+
+# --- Waydroid Launch ---
+echo -e "\n\033[1;32m[5/6] 📱 Handling Waydroid...\033[0m"
+
+if ! command -v waydroid &>/dev/null; then
+    echo -e "\033[1;33m⚠️ Waydroid not found! Install it first.\033[0m"
+else
+    if pidof waydroid >/dev/null; then
+        echo " - Waydroid already running"
+    else
+        echo " - Starting Waydroid in background..."
+        nohup gamemoderun waydroid session start >/dev/null 2>&1 &
+        sleep 7
+    fi
+
+    WAYDROID_PID=$(pidof waydroid)
+    if [ -n "$WAYDROID_PID" ]; then
+        renice -n -15 -p "$WAYDROID_PID"
+        echo " - Waydroid PID $WAYDROID_PID: Priority boosted (-15 nice)"
+    fi
+fi
+
+# --- Temperature Monitoring ---
+echo -e "\n\033[1;32m[6/6] 🌡️ Setting up monitoring...\033[0m"
+sensors-detect --auto >/dev/null
+echo " - Sensors configured (run 'watch sensors' to monitor)"
+echo " - System monitor: htop"
+
+# --- Final Status ---
+echo -e "\n\033[1;36m✅ Boost Complete!\033[0m"
+echo -e "\n\033[1;34m=== Current Status ==="
+echo "ZRAM: $(zramctl | grep -v 'NAME' || echo 'Not active')"
+echo "CPU Governor: $(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || echo 'Unknown')"
+echo "Turbo: $(if [ -f /sys/devices/system/cpu/intel_pstate/no_turbo ]; then 
+                 [ $(cat /sys/devices/system/cpu/intel_pstate/no_turbo) -eq 0 ] && echo "Enabled" || echo "Disabled"; 
+              elif [ -f /sys/devices/system/cpu/cpufreq/boost ]; then 
+                 [ $(cat /sys/devices/system/cpu/cpufreq/boost) -eq 1 ] && echo "Enabled" || echo "Disabled"; 
+              else echo "Not available"; fi)"
+echo -e "\033[1;34m=====================\033[0m"
+
+# --- Persistence Installer ---
+if [ "$1" == "--install-systemd" ]; then
+    SERVICE_FILE="/etc/systemd/system/waydroid-boost.service"
+    cat > "$SERVICE_FILE" <<EOF
+[Unit]
+Description=Waydroid Performance Boost
+After=waydroid-container.service network.target
+
+[Service]
+Type=oneshot
+ExecStart=$PWD/$(basename $0)
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable waydroid-boost
+    echo -e "\n\033[1;32m✅ Systemd service installed and enabled!\033[0m"
+    echo "To start now: sudo systemctl start waydroid-boost"
+fi
